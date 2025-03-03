@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>HAR File to ZIP</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+    integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg=="
+    crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <style>
+    .file.is-boxed .file-label {
+      justify-content: center;
+    }
+
+    #messageArea {
+      min-height: 50px;
+      /* Ensure some space even when empty */
+    }
+  </style>
+</head>
+
+<body>
+  <section class="section">
+    <div class="container">
+      <h1 class="title">HAR File to ZIP</h1>
+      <p class="subtitle">Upload a HAR file to download response contents as ZIP files. Handles base64 encoded content.
+      </p>
+
+      <div class="file is-boxed">
+        <label class="file-label">
+          <input class="file-input" type="file" name="harfile" id="harFileUploader" accept=".har">
+          <span class="file-cta">
+            <span class="file-icon">
+              <i class="fas fa-upload"></i>
+            </span>
+            <span class="file-label">
+              Choose a HAR file…
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="buttons mt-4">
+        <button class="button is-primary" id="downloadZipButton" disabled>
+          <span class="icon is-small">
+            <i class="fas fa-file-archive"></i>
+          </span>
+          <span>Download ZIP</span>
+        </button>
+        <button class="button is-warning" id="removeVisibilityHiddenButton" disabled>
+          <span class="icon is-small">
+            <i class="fas fa-eye-slash"></i>
+          </span>
+          <span>Remove <code>body{visibility:hidden !important;}</code></span>
+        </button>
+      </div>
+
+      <div id="messageArea" class="mt-4">
+        <!-- Messages will be displayed here -->
+      </div>
+    </div>
+  </section>
+
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const harFileUploader = document.getElementById('harFileUploader');
+      const downloadZipButton = document.getElementById('downloadZipButton');
+      const removeVisibilityHiddenButton = document.getElementById('removeVisibilityHiddenButton');
+      const messageArea = document.getElementById('messageArea');
+
+      let harData = null;
+
+      harFileUploader.addEventListener('change', async (event) => {
+        messageArea.innerHTML = ''; // Clear previous messages
+        downloadZipButton.setAttribute('disabled', ''); // Disable button until HAR is processed
+        removeVisibilityHiddenButton.setAttribute('disabled', '');
+
+        const file = event.target.files[0];
+        if (!file) {
+          return;
+        }
+
+        if (!file.name.endsWith('.har')) {
+          messageArea.innerHTML = `<div class="notification is-danger">Please upload a valid <strong>.har</strong> file.</div>`;
+          return;
+        }
+
+        try {
+          const fileContent = await file.text();
+          harData = JSON.parse(fileContent);
+          downloadZipButton.removeAttribute('disabled');
+          removeVisibilityHiddenButton.removeAttribute('disabled');
+          messageArea.innerHTML = `<div class="notification is-success">HAR file loaded successfully.</div>`;
+        } catch (error) {
+          console.error("Error processing HAR file:", error);
+          messageArea.innerHTML = `<div class="notification is-danger">Error processing HAR file. Please check the file format.</div>`;
+          downloadZipButton.setAttribute('disabled', '');
+          removeVisibilityHiddenButton.setAttribute('disabled', '');
+          harData = null;
+        }
+      });
+
+      downloadZipButton.addEventListener('click', async () => {
+        if (!harData) {
+          messageArea.innerHTML = `<div class="notification is-danger">No HAR data to process. Please upload a HAR file first.</div>`;
+          return;
+        }
+
+        messageArea.innerHTML = `<div class="notification is-info"><i class="fas fa-spinner fa-spin"></i> Processing HAR file and generating ZIP...</div>`;
+        downloadZipButton.setAttribute('disabled', '');
+        removeVisibilityHiddenButton.setAttribute('disabled', '');
+
+        try {
+          const zip = new JSZip();
+          const entries = harData.log.entries;
+
+          for (const entry of entries) {
+            if (entry.response && entry.response.content) {
+              const content = entry.response.content;
+              const url = entry.request.url;
+              let filename = "unknown_file.txt";
+              let relativePath = "";
+
+              try {
+                const urlParts = new URL(url);
+                const pathname = urlParts.pathname;
+                const pathnameParts = pathname.split('/');
+
+                filename = pathnameParts.pop() || filename;  // Get filename (or default)
+                filename = filename.split('?')[0]; // Remove any query string.
+                relativePath = pathnameParts.join('/');     // Reconstruct path
+
+                if (!filename || filename === "") {
+                  filename = "unknown_file.txt";
+                }
+
+              } catch (urlError) {
+                console.warn("Could not parse URL to extract filename:", url, urlError);
+              }
+
+              const fullFilePath = relativePath ? `${relativePath}/${filename}` : filename;
+
+              if (content.text) {
+                let fileData;
+                let options = {};
+
+                if (content.encoding === 'base64') {
+                  fileData = content.text; // No need to decode here, JSZip handles it
+
+                  // Determine file type from MIME type
+                  let fileType = content.mimeType || 'application/octet-stream';
+
+                  // Remove encoding options, as JSZip handles base64 automatically
+                  options.base64 = true;
+
+                  zip.file(fullFilePath, fileData, options);
+
+                } else {
+                  fileData = content.text;
+                  zip.file(fullFilePath, fileData);
+                }
+              }
+            }
+          }
+
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          const zipFilename = 'har_files.zip';
+
+          const downloadLink = document.createElement('a');
+          downloadLink.href = URL.createObjectURL(zipBlob);
+          downloadLink.download = zipFilename;
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+
+          URL.revokeObjectURL(downloadLink.href);
+
+          messageArea.innerHTML = `<div class="notification is-success">ZIP file generated and download started.</div>`;
+        } catch (error) {
+          console.error("Error generating ZIP:", error);
+          messageArea.innerHTML = `<div class="notification is-danger">Error generating ZIP file. Please check console for details.</div>`;
+        } finally {
+          downloadZipButton.removeAttribute('disabled');
+          removeVisibilityHiddenButton.removeAttribute('disabled');
+        }
+      });
+
+      removeVisibilityHiddenButton.addEventListener('click', async () => {
+        if (!harData) {
+          messageArea.innerHTML = `<div class="notification is-danger">No HAR data to process. Please upload a HAR file first.</div>`;
+          return;
+        }
+
+        messageArea.innerHTML = `<div class="notification is-info"><i class="fas fa-spinner fa-spin"></i> Processing HAR file and generating ZIP with <code>body{visibility:hidden !important;}</code> removed...</div>`;
+        downloadZipButton.setAttribute('disabled', '');
+        removeVisibilityHiddenButton.setAttribute('disabled', '');
+
+        try {
+          const zip = new JSZip();
+          const entries = harData.log.entries;
+          const stringToRemove = 'body{visibility:hidden !important;}';
+
+          for (const entry of entries) {
+            if (entry.response && entry.response.content) {
+              const content = entry.response.content;
+              const url = entry.request.url;
+              let filename = "unknown_file.txt";
+              let relativePath = "";
+              let fileData = null;  // Initialize fileData here
+
+              try {
+                const urlParts = new URL(url);
+                const pathname = urlParts.pathname;
+                const pathnameParts = pathname.split('/');
+
+                filename = pathnameParts.pop() || filename;  // Get filename (or default)
+                filename = filename.split('?')[0]; // Remove any query string.
+                relativePath = pathnameParts.join('/');     // Reconstruct path
+
+                if (!filename || filename === "") {
+                  filename = "unknown_file.txt";
+                }
+
+              } catch (urlError) {
+                console.warn("Could not parse URL to extract filename:", url, urlError);
+              }
+
+              const fullFilePath = relativePath ? `${relativePath}/${filename}` : filename;
+
+              if (content.text) {
+                if (content.encoding === 'base64') {
+
+                  fileData = atob(content.text); // decode base64
+                  fileData = fileData.replace(new RegExp(stringToRemove, 'g'), '');
+
+                  zip.file(fullFilePath, fileData, { base64: false, binary: true });
+
+                }
+                else {
+                  fileData = content.text.replace(new RegExp(stringToRemove, 'g'), '');
+                  zip.file(fullFilePath, fileData);
+                }
+
+
+              }
+
+            }
+          }
+
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          const zipFilename = 'har_files_no_visibility_hidden.zip';
+
+          const downloadLink = document.createElement('a');
+          downloadLink.href = URL.createObjectURL(zipBlob);
+          downloadLink.download = zipFilename;
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+
+          URL.revokeObjectURL(downloadLink.href);
+
+          messageArea.innerHTML = `<div class="notification is-success">ZIP file generated and download started with <code>body{visibility:hidden !important;}</code> removed.</div>`;
+        } catch (error) {
+          console.error("Error generating ZIP with visibility:hidden removed:", error);
+          messageArea.innerHTML = `<div class="notification is-danger">Error generating ZIP file with <code>body{visibility:hidden !important;}</code> removed. Please check console for details.</div>`;
+        } finally {
+          downloadZipButton.removeAttribute('disabled'); // Re-enable button after processing (even if error)
+          removeVisibilityHiddenButton.removeAttribute('disabled');
+        }
+      });
+
+    });
+  </script>
+</body>
+
+</html>
